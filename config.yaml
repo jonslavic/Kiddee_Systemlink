@@ -1,7 +1,7 @@
-# NI SystemLink connection settings
+# NI SystemLink connection — uses Auto configuration (same as LabVIEW Auto mode)
+# No credentials required when running on the local SystemLink server.
 systemlink:
-  server_url: "http://LT-slavic"
-  api_key: ""                      # Paste your SystemLink API key here
+  server_url: "http://localhost"   # kept for reference; Auto config handles this automatically
 
 # Excel source file
 excel:
@@ -9,16 +9,13 @@ excel:
   sheet_name: "testdata"
 
 # Column mapping — matches the 'testdata' sheet exactly.
-# These names must match the Excel column headers character-for-character.
 column_mapping:
-  model:            "Model"            # Part/model number  → programName + partNumber
-  serial_number:    "SerialNumber"     # DUT serial number  → serialNumber
-  status:           "TestResult"       # Pass / Fail        → result status
-  started_at:       "DateTime"         # Test timestamp     → startedAt
-
-  # Failure step detail (only populated on Fail rows)
-  step_name:        "TestStepFailed"   # Name of the step that failed
-  step_value:       "MeasuredValue"    # Actual measured value
-  step_type:        "MeasurementType"  # e.g. BoundaryScan
-  step_low_limit:   "LowerLimit"       # Expected low / exact limit
-  step_high_limit:  "UpperLimit"       # Expected high limit (NaN if not applicable)
+  model:            "Model"
+  serial_number:    "SerialNumber"
+  status:           "TestResult"
+  started_at:       "DateTime"
+  step_name:        "TestStepFailed"
+  step_value:       "MeasuredValue"
+  step_type:        "MeasurementType"
+  step_low_limit:   "LowerLimit"
+  step_high_limit:  "UpperLimit"
