@@ -1,10 +1,15 @@
 """
-Excel → NI SystemLink TestMonitor converter.
+Excel (testdata sheet) → NI SystemLink TestMonitor converter.
+
+Each row in the testdata sheet = one test result.
+Fail rows additionally carry a failing step (TestStepFailed, MeasuredValue, etc.).
 
 Usage:
-    python converter.py                         # uses config.yaml
-    python converter.py --config my_config.yaml
-    python converter.py --file results.xlsx     # override Excel path in config
+    py converter.py                          # uses config.yaml
+    py converter.py --config my.yaml
+    py converter.py --file results.xlsx      # override Excel path
+    py converter.py --dry-run                # print payloads, don't send
+    py converter.py --limit 10               # send only the first N rows
 """
 
 import argparse
@@ -18,21 +23,16 @@ import yaml
 
 
 # ---------------------------------------------------------------------------
-# Config helpers
+# Config
 # ---------------------------------------------------------------------------
 
 def load_config(path: str) -> dict:
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
-def col(mapping: dict, key: str):
-    """Return the Excel column name for a mapping key, or None."""
-    return mapping.get(key) or None
-
-
 # ---------------------------------------------------------------------------
-# SystemLink API helpers
+# SystemLink client
 # ---------------------------------------------------------------------------
 
 class SystemLinkClient:
@@ -48,116 +48,119 @@ class SystemLinkClient:
         url = f"{self.base}{endpoint}"
         resp = self.session.post(url, json=payload, timeout=30)
         if not resp.ok:
-            print(f"  ERROR {resp.status_code}: {resp.text[:400]}", file=sys.stderr)
+            print(f"  HTTP {resp.status_code}: {resp.text[:500]}", file=sys.stderr)
             resp.raise_for_status()
         return resp.json()
 
-    def create_result(self, result: dict) -> str:
-        """Create a test result and return its id."""
-        body = {"results": [result]}
-        data = self._post("/nitestmonitor/v2/results", body)
+    def create_result(self, payload: dict) -> str:
+        data = self._post("/nitestmonitor/v2/results", {"results": [payload]})
         return data["results"][0]["id"]
 
-    def create_steps(self, steps: list[dict]):
-        """Bulk-create test steps."""
-        if not steps:
-            return
-        self._post("/nitestmonitor/v2/steps", {"steps": steps})
+    def create_step(self, payload: dict):
+        self._post("/nitestmonitor/v2/steps", {"steps": [payload]})
 
 
 # ---------------------------------------------------------------------------
-# Row → SystemLink payload builders
+# Value helpers
 # ---------------------------------------------------------------------------
+
+def is_missing(val) -> bool:
+    try:
+        return pd.isna(val)
+    except (TypeError, ValueError):
+        return False
+
+
+def to_str(val) -> str | None:
+    if is_missing(val):
+        return None
+    s = str(val).strip()
+    return s or None
+
+
+def to_scalar(val):
+    """Return float if numeric, else string. None if missing."""
+    if is_missing(val):
+        return None
+    if isinstance(val, bool):
+        return str(val)          # keep True/False as strings for SystemLink
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return str(val).strip() or None
+
 
 STATUS_MAP = {
-    "passed": "Passed",
     "pass":   "Passed",
-    "failed": "Failed",
+    "passed": "Passed",
     "fail":   "Failed",
-    "p":      "Passed",
-    "f":      "Failed",
+    "failed": "Failed",
 }
 
-
 def normalize_status(raw) -> str:
-    if pd.isna(raw):
+    if is_missing(raw):
         return "Failed"
     return STATUS_MAP.get(str(raw).strip().lower(), "Failed")
 
 
-def safe_str(val) -> str | None:
-    if pd.isna(val):
-        return None
-    s = str(val).strip()
-    return s if s else None
-
-
-def safe_float(val) -> float | None:
-    if pd.isna(val):
-        return None
-    try:
-        return float(val)
-    except (ValueError, TypeError):
-        return None
-
+# ---------------------------------------------------------------------------
+# Payload builders
+# ---------------------------------------------------------------------------
 
 def build_result(row: pd.Series, cm: dict) -> dict:
+    model  = to_str(row[cm["model"]])
+    serial = to_str(row[cm["serial_number"]])
+    status = normalize_status(row[cm["status"]])
+
     result = {
-        "programName": str(row[col(cm, "program_name")]).strip(),
-        "serialNumber": str(row[col(cm, "serial_number")]).strip(),
-        "status": {"statusType": normalize_status(row[col(cm, "status")])},
+        "programName":  model or "Unknown",
+        "serialNumber": serial or "Unknown",
+        "status":       {"statusType": status},
+        "partNumber":   model,
     }
 
-    if col(cm, "part_number") and not pd.isna(row.get(col(cm, "part_number"), float("nan"))):
-        result["partNumber"] = safe_str(row[col(cm, "part_number")])
-
-    if col(cm, "operator") and not pd.isna(row.get(col(cm, "operator"), float("nan"))):
-        result["operator"] = safe_str(row[col(cm, "operator")])
-
-    if col(cm, "started_at"):
-        val = row.get(col(cm, "started_at"))
-        if val is not None and not pd.isna(val):
-            if isinstance(val, pd.Timestamp):
-                result["startedAt"] = val.tz_localize(timezone.utc).isoformat()
-            else:
-                result["startedAt"] = str(val)
+    ts = row.get(cm["started_at"])
+    if not is_missing(ts):
+        if isinstance(ts, pd.Timestamp):
+            result["startedAt"] = ts.tz_localize(timezone.utc).isoformat()
+        else:
+            result["startedAt"] = str(ts)
 
     return result
 
 
 def build_step(row: pd.Series, result_id: str, cm: dict) -> dict | None:
-    step_map = cm.get("steps", {})
-    name = safe_str(row.get(col(step_map, "name"), float("nan")))
-    if not name:
-        return None
+    step_name = to_str(row.get(cm["step_name"], None))
+    if not step_name:
+        return None          # Pass rows have no failing step
 
-    step = {
-        "resultId": result_id,
-        "name": name,
-        "status": {"statusType": normalize_status(row.get(col(step_map, "status"), "FAILED"))},
+    value    = to_scalar(row.get(cm["step_value"], None))
+    low      = to_scalar(row.get(cm["step_low_limit"], None))
+    high     = to_scalar(row.get(cm["step_high_limit"], None))
+    meas_type = to_str(row.get(cm["step_type"], None))
+
+    parameter = {
+        "name":   step_name,
+        "status": {"statusType": "Failed"},
     }
-
-    value = safe_str(row.get(col(step_map, "value"), float("nan")))
-    units = safe_str(row.get(col(step_map, "units"), float("nan")))
-    low   = safe_float(row.get(col(step_map, "low_limit"), float("nan")))
-    high  = safe_float(row.get(col(step_map, "high_limit"), float("nan")))
-
     if value is not None:
-        measurement = {"name": name, "status": step["status"]}
-        num = safe_float(value)
-        if num is not None:
-            measurement["measurement"] = num
-            if units:
-                measurement["units"] = units
-            if low is not None:
-                measurement["lowLimit"] = low
-            if high is not None:
-                measurement["highLimit"] = high
-        else:
-            measurement["measurement"] = value
-        step["data"] = {"text": value, "parameters": [measurement]}
+        parameter["measurement"] = value
+    if low is not None:
+        parameter["lowLimit"] = low
+    if high is not None:
+        parameter["highLimit"] = high
+    if meas_type:
+        parameter["units"] = meas_type   # reuse units field for measurement type label
 
-    return step
+    return {
+        "resultId": result_id,
+        "name":     step_name,
+        "status":   {"statusType": "Failed"},
+        "data":     {
+            "text":       str(value) if value is not None else "",
+            "parameters": [parameter],
+        },
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -165,10 +168,11 @@ def build_step(row: pd.Series, result_id: str, cm: dict) -> dict | None:
 # ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="Convert Excel to NI SystemLink TestMonitor results")
-    parser.add_argument("--config", default="config.yaml", help="Path to config YAML (default: config.yaml)")
-    parser.add_argument("--file",   default=None,           help="Override Excel file path from config")
-    parser.add_argument("--dry-run", action="store_true",   help="Parse Excel and print payloads without sending")
+    parser = argparse.ArgumentParser(description="Convert Kiddee testdata Excel → NI SystemLink TestMonitor")
+    parser.add_argument("--config",  default="config.yaml")
+    parser.add_argument("--file",    default=None,  help="Override Excel path from config")
+    parser.add_argument("--dry-run", action="store_true", help="Print payloads without sending")
+    parser.add_argument("--limit",   type=int, default=None, help="Only process first N rows")
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -178,48 +182,60 @@ def main():
 
     excel_path = args.file or ex_cfg["file_path"]
     if not Path(excel_path).exists():
-        sys.exit(f"Excel file not found: {excel_path}")
+        sys.exit(f"ERROR: Excel file not found: {excel_path}")
 
-    print(f"Reading: {excel_path}")
-    df = pd.read_excel(excel_path, sheet_name=ex_cfg.get("sheet_name", 0))
-    print(f"  {len(df)} rows found\n")
+    print(f"Reading: {excel_path}  (sheet: {ex_cfg['sheet_name']})")
+    df = pd.read_excel(excel_path, sheet_name=ex_cfg["sheet_name"])
+    if args.limit:
+        df = df.head(args.limit)
+    total = len(df)
+    print(f"  {total} rows to process\n")
 
     client = None if args.dry_run else SystemLinkClient(sl_cfg["server_url"], sl_cfg["api_key"])
 
-    results_sent = 0
-    steps_sent   = 0
+    results_ok = 0
+    results_err = 0
+    steps_ok = 0
 
     for idx, row in df.iterrows():
         try:
             result_payload = build_result(row, cm)
         except (KeyError, TypeError) as e:
-            print(f"  Row {idx}: skipped — missing required column: {e}", file=sys.stderr)
+            print(f"  Row {idx}: skipped — {e}", file=sys.stderr)
+            results_err += 1
             continue
 
         step_payload = build_step(row, "__dry__", cm)
 
         if args.dry_run:
-            print(f"[DRY-RUN] Row {idx} result: {result_payload}")
+            print(f"[DRY] Row {idx:>5}  result: {result_payload}")
             if step_payload:
-                step_payload["resultId"] = "<new-result-id>"
-                print(f"[DRY-RUN] Row {idx} step:   {step_payload}")
+                step_payload["resultId"] = "<id>"
+                print(f"[DRY] Row {idx:>5}  step:   {step_payload}")
             continue
 
         try:
             result_id = client.create_result(result_payload)
-            results_sent += 1
-            print(f"  Row {idx}: result created — id={result_id}")
+            results_ok += 1
+            sn = result_payload["serialNumber"]
+            status = result_payload["status"]["statusType"]
+            print(f"  Row {idx:>5}  SN={sn}  {status}  id={result_id}")
 
             if step_payload:
                 step_payload["resultId"] = result_id
-                client.create_steps([step_payload])
-                steps_sent += 1
+                client.create_step(step_payload)
+                steps_ok += 1
 
         except requests.HTTPError:
-            print(f"  Row {idx}: failed — see error above", file=sys.stderr)
+            results_err += 1
+            print(f"  Row {idx}: upload failed — see error above", file=sys.stderr)
+
+        if results_ok % 100 == 0 and results_ok > 0:
+            print(f"  ... {results_ok}/{total} results sent")
 
     if not args.dry_run:
-        print(f"\nDone. {results_sent} results, {steps_sent} steps sent to {sl_cfg['server_url']}")
+        print(f"\nDone.  {results_ok} results sent  |  {steps_ok} steps sent  |  {results_err} errors")
+        print(f"Server: {sl_cfg['server_url']}")
 
 
 if __name__ == "__main__":
