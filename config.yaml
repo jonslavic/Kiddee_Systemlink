@@ -1,0 +1,33 @@
+# NI SystemLink connection settings
+systemlink:
+  server_url: "http://LT-slavic"   # On-prem server hostname
+  api_key: ""                       # Paste your SystemLink API key here
+
+# Excel file to convert
+excel:
+  file_path: "data.xlsx"            # Path to your Excel file
+  sheet_name: 0                     # 0 = first sheet, or use the sheet tab name
+
+# Map Excel column headers to SystemLink TestMonitor fields.
+# Set a value to null if that column doesn't exist in your file.
+column_mapping:
+
+  # --- Test Result (top-level record) ---
+  program_name: "Program Name"      # Required: name of the test program/fixture
+  serial_number: "Serial Number"    # Required: DUT serial number
+  status: "Status"                  # Required: overall result — cell must contain PASSED or FAILED
+
+  part_number: "Part Number"        # Optional
+  operator: "Operator"              # Optional
+  started_at: "Start Time"          # Optional: ISO datetime or Excel datetime cell
+
+  # --- Test Steps (measurements) ---
+  # Each row in the Excel sheet becomes one test step on the result.
+  # Leave a field null if the column doesn't exist.
+  steps:
+    name:       "Step Name"         # Name of the measurement/test step
+    value:      "Measurement"       # Numeric or string measurement value
+    units:      "Units"             # e.g. "V", "A", "ms"
+    status:     "Step Status"       # PASSED or FAILED (defaults to parent status if null)
+    low_limit:  "Low Limit"         # Lower bound for numeric measurements
+    high_limit: "High Limit"        # Upper bound for numeric measurements
