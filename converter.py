@@ -15,6 +15,7 @@ Usage:
 
 import argparse
 import sys
+import uuid
 from datetime import timezone
 from pathlib import Path
 
@@ -119,19 +120,31 @@ def build_step(row: pd.Series, result_id: str, cm: dict) -> CreateStepRequest | 
     high      = to_scalar(row.get(cm["step_high_limit"]))
     meas_type = to_str(row.get(cm["step_type"])) or "NumericLimitTest"
 
+    # TestStand data model requires all values as strings and a comparisonType
+    if high is not None and low is not None:
+        comparison = "GELE"
+    elif low is not None:
+        comparison = "GE"
+    else:
+        comparison = "EQ"
+
     measurement = Measurement(
         name=step_name,
-        status=Status(status_type=StatusType.FAILED),
-        measurement=value,
-        lowLimit=low,
-        highLimit=high,
+        status="Failed",
+        measurement=str(value) if value is not None else "",
+        lowLimit=str(low) if low is not None else None,
+        highLimit=str(high) if high is not None else None,
+        comparisonType=comparison,
     )
 
     return CreateStepRequest(
+        step_id=str(uuid.uuid4()),
+        parent_id="root",
         result_id=result_id,
         name=step_name,
         status=Status(status_type=StatusType.FAILED),
-        step_type=meas_type,
+        step_type="NumericLimitTest",
+        data_model="TestStand",
         data=StepData(
             text=str(value) if value is not None else "",
             parameters=[measurement],
