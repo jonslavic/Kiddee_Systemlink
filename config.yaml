@@ -4,18 +4,8 @@ systemlink:
   server_url: "http://localhost"   # kept for reference; Auto config handles this automatically
 
 # Excel source file
+program_name: "7990497-01"     # Written to programName and partNumber in SystemLink
+
 excel:
   file_path: "C:\\Users\\12657\\OneDrive - Circuit Check Inc\\Kiddee\\7990497-01_Data_12months w pareto.xlsx"
-  sheet_name: "testdata"
-
-# Column mapping — matches the 'testdata' sheet exactly.
-column_mapping:
-  model:            "Model"
-  serial_number:    "SerialNumber"
-  status:           "TestResult"
-  started_at:       "DateTime"
-  step_name:        "TestStepFailed"
-  step_value:       "MeasuredValue"
-  step_type:        "MeasurementType"
-  step_low_limit:   "LowerLimit"
-  step_high_limit:  "UpperLimit"
+  sheet_name: "7990497-01_April24-25"  # Wide-format sheet with all steps as columns
