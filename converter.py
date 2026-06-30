@@ -17,6 +17,7 @@ Usage:
 
 import argparse
 import math
+import socket
 import sys
 import uuid
 from datetime import datetime, timezone
@@ -33,6 +34,7 @@ from nisystemlink.clients.testmonitor.models import (
     Status,
     StatusType,
     StepData,
+    UpdateResultRequest,
 )
 
 
@@ -161,6 +163,7 @@ def build_result(row: pd.Series, program_name: str) -> CreateResultRequest:
         program_name=program_name,
         part_number=program_name,
         serial_number=sn,
+        host_name=socket.gethostname(),
         status=Status(status_type=status_type),
         started_at=started_at,
     )
@@ -291,6 +294,12 @@ def main():
                 for i in range(0, len(step_reqs), 100):
                     client.create_steps(step_reqs[i:i+100])
                 steps_ok += len(step_reqs)
+
+            # Finalize the result (mirrors LabVIEW "Update Result" → "determine status from steps")
+            client.update_results([UpdateResultRequest(
+                id=result_id,
+                status=result_req.status,
+            )])
 
             sn     = result_req.serial_number
             status = result_req.status.status_type.value
